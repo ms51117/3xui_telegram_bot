@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  xui-bot:
+    build: .
+    container_name: xui-telegram-bot
+    restart: always
+    network_mode: "host"
+    env_file:
+      - .env
+    volumes:
+      # ذخیره دائمی دیتابیس کاربران و کش دامنه کلودفلر
+      - ./data:/app/data
+      # دسترسی به ژورنال سیستم‌عامل برای خواندن خودکار دامنه کلودفلر
+      - /var/log/journal:/var/log/journal:ro
+      - /run/log/journal:/run/log/journal:ro
+      # دسترسی فقط-خواندنی به دیتابیس پنل در صورت نیاز به فال‌بک
+      - /etc/x-ui:/etc/x-ui:ro
+    environment:
+      - TZ=Asia/Tehran
+      - DB_PATH=/app/data/bot_data.db

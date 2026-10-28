@@ -4,11 +4,12 @@ import os
 import io
 import qrcode
 import logging
-from config import CLOUDFLARE_SERVICE, CONFIG_PORT, CONFIG_PATH
+from config import CLOUDFLARE_SERVICE, CONFIG_PORT, CONFIG_PATH, DB_PATH
 
 logger = logging.getLogger(__name__)
 
-DOMAIN_CACHE_FILE = "last_known_domain.txt"
+db_dir = os.path.dirname(os.path.abspath(DB_PATH))
+DOMAIN_CACHE_FILE = os.path.join(db_dir, "last_known_domain.txt") if db_dir else "last_known_domain.txt"
 
 def get_current_domain() -> str:
     """
