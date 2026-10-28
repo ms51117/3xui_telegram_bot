@@ -12,11 +12,15 @@ from config import (
     INBOUND_ID, XUI_DB_PATH
 )
 
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 logger = logging.getLogger(__name__)
 
 class XUIClient:
     def __init__(self):
         self.session = requests.Session()
+        self.session.verify = False
         self.base_url = PANEL_URL.rstrip('/')
         self.base_path = PANEL_BASE_PATH
         self.is_logged_in = False
