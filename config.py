@@ -19,6 +19,7 @@ if PANEL_BASE_PATH and not PANEL_BASE_PATH.endswith("/"):
 
 PANEL_USERNAME = os.getenv("PANEL_USERNAME", "admin")
 PANEL_PASSWORD = os.getenv("PANEL_PASSWORD", "admin")
+PANEL_API_TOKEN = os.getenv("PANEL_API_TOKEN", "")
 
 # Target Inbound for VPN configs
 INBOUND_ID = int(os.getenv("INBOUND_ID", "2"))

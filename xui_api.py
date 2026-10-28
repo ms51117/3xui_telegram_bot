@@ -9,7 +9,7 @@ from typing import Optional, Dict, Any, List
 
 from config import (
     PANEL_URL, PANEL_BASE_PATH, PANEL_USERNAME, PANEL_PASSWORD,
-    INBOUND_ID, XUI_DB_PATH
+    PANEL_API_TOKEN, INBOUND_ID, XUI_DB_PATH
 )
 
 import urllib3
@@ -23,42 +23,90 @@ class XUIClient:
         self.session.verify = False
         self.base_url = PANEL_URL.rstrip('/')
         self.base_path = PANEL_BASE_PATH
+        self.api_token = PANEL_API_TOKEN.strip() if PANEL_API_TOKEN else ""
         self.is_logged_in = False
         self.last_login_time = 0
 
+        # Set standard browser headers to prevent 403 from 3X-UI WAF / origin checks
+        self.session.headers.update({
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Origin": self.base_url,
+            "Referer": f"{self.api_prefix}"
+        })
+
+        # If Bearer token is provided, set it immediately
+        if self.api_token:
+            self.session.headers["Authorization"] = f"Bearer {self.api_token}"
+            self.is_logged_in = True
+            logger.info("Using Bearer API Token for 3X-UI authentication.")
+
     @property
     def api_prefix(self) -> str:
-        # Construct full URL prefix like: http://127.0.0.1:2053/h4B2swmMPtUzP9SJqA/
+        # Construct full URL prefix like: https://127.0.0.1:2053/h4B2swmMPtUzP9SJqA/
         return f"{self.base_url}{self.base_path}"
 
     def login(self) -> bool:
-        login_url = f"{self.api_prefix}login"
+        # If API token is provided, no login needed
+        if self.api_token:
+            return True
+
         payload = {
             "username": PANEL_USERNAME,
             "password": PANEL_PASSWORD,
             "twoFactorCode": ""
         }
-        try:
-            resp = self.session.post(login_url, json=payload, timeout=10)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("success"):
-                    self.is_logged_in = True
-                    self.last_login_time = time.time()
-                    logger.info("Successfully logged in to 3X-UI panel API.")
-                    return True
-                else:
-                    logger.error(f"Login failed: {data.get('msg')}")
-            else:
-                logger.error(f"Login HTTP error {resp.status_code}: {resp.text}")
-        except Exception as e:
-            logger.error(f"Exception during 3X-UI login: {e}")
-            
+
+        # Try with full base path first, then without if needed
+        candidate_urls = [
+            f"{self.api_prefix}login",
+            f"{self.base_url}/login"
+        ]
+
+        for login_url in candidate_urls:
+            try:
+                # 1. Try JSON payload
+                resp = self.session.post(login_url, json=payload, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data.get("success"):
+                        self._on_login_success()
+                        return True
+                    else:
+                        logger.error(f"Login failed at {login_url}: {data.get('msg')}")
+                elif resp.status_code in (400, 403):
+                    # 2. Try form data payload
+                    form_resp = self.session.post(login_url, data=payload, timeout=10)
+                    if form_resp.status_code == 200 and form_resp.json().get("success"):
+                        self._on_login_success()
+                        return True
+                    logger.warning(f"Login attempt at {login_url} returned {resp.status_code}")
+            except Exception as e:
+                logger.warning(f"Login attempt error at {login_url}: {e}")
+
         self.is_logged_in = False
         return False
 
+    def _on_login_success(self):
+        self.is_logged_in = True
+        self.last_login_time = time.time()
+        logger.info("Successfully logged in to 3X-UI panel API.")
+        
+        # Fetch CSRF token for subsequent requests
+        try:
+            csrf_url = f"{self.api_prefix}csrf-token"
+            r = self.session.get(csrf_url, timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("success") and data.get("obj"):
+                    self.session.headers["X-CSRF-Token"] = data.get("obj")
+        except Exception:
+            pass
+
     def ensure_logged_in(self) -> bool:
-        # Re-login if not logged in or session older than 20 minutes
+        if self.api_token:
+            return True
         if not self.is_logged_in or (time.time() - self.last_login_time > 1200):
             return self.login()
         return True
