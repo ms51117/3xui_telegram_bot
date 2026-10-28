@@ -1,0 +1,17 @@
+[Unit]
+Description=3X-UI Telegram Account Manager Bot
+After=network.target cloudflared-quick.service
+
+[Service]
+Type=simple
+User=root
+# مسیر پروژه روی سرور لینوکس (در صورت نیاز مسیر را مطابق سرور خود ویرایش کنید)
+WorkingDirectory=/root/account_manager
+ExecStart=/root/account_manager/venv/bin/python bot.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
