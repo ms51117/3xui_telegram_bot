@@ -127,18 +127,33 @@ def bind_telegram_id_by_email(email: str, telegram_id: int):
     conn.close()
     return affected > 0
 
-def update_user_profile(email: str, name: str = None, username: str = None):
+def update_user_profile(email: str, name: str = None, username: str = None, telegram_id: int = None, notes: str = None):
     conn = get_connection()
     cursor = conn.cursor()
-    clean_username = normalize_username(username) if username is not None else None
+    updates = []
+    params = []
     
-    if name is not None and clean_username is not None:
-        cursor.execute("UPDATE users SET name = ?, username = ? WHERE email = ?", (name, clean_username, email))
-    elif name is not None:
-        cursor.execute("UPDATE users SET name = ? WHERE email = ?", (name, email))
-    elif clean_username is not None:
-        cursor.execute("UPDATE users SET username = ? WHERE email = ?", (clean_username, email))
+    if name is not None:
+        updates.append("name = ?")
+        params.append(name.strip())
+    if username is not None:
+        clean_username = normalize_username(username)
+        updates.append("username = ?")
+        params.append(clean_username)
+    if telegram_id is not None:
+        updates.append("telegram_id = ?")
+        params.append(telegram_id)
+    if notes is not None:
+        updates.append("notes = ?")
+        params.append(notes)
         
+    if not updates:
+        conn.close()
+        return False
+        
+    params.append(email)
+    sql = f"UPDATE users SET {', '.join(updates)} WHERE email = ?"
+    cursor.execute(sql, tuple(params))
     affected = cursor.rowcount
     conn.commit()
     conn.close()
@@ -222,10 +237,10 @@ def get_client_remark(user_info) -> str:
     """
     Constructs a clear identifying remark for the VLESS config.
     Priority:
-    1. If username exists: @username-telegram_id (e.g. @ms51117-87384626)
-    2. If name exists and is not generic: Name-telegram_id (e.g. Ali-87384626)
-    3. If numeric telegram_id or email exists: telegram_id (e.g. 87384626)
-    4. Fallback: email
+    1. If name is customized and username exists: Name-@username-id
+    2. If only username exists: @username-id
+    3. If only custom name exists: Name-id
+    4. Fallback: id or email
     """
     if isinstance(user_info, str):
         u = get_user_by_email(user_info)
@@ -241,23 +256,20 @@ def get_client_remark(user_info) -> str:
     tg_id = u.get("telegram_id")
     email = u.get("email", "")
 
-    # Clean username
-    clean_u = username.lstrip("@").strip() if username else ""
+    clean_u = f"@{username.lstrip('@').strip()}" if username else ""
+    clean_name = re.sub(r'[\s]+', '-', str(name).strip()) if (name and not str(name).startswith("کاربر ") and name != email) else ""
     clean_tg_id = str(tg_id).strip() if tg_id else (email if str(email).isdigit() else "")
 
-    if clean_u and clean_tg_id:
-        return f"@{clean_u}-{clean_tg_id}"
-    elif clean_u:
-        return f"@{clean_u}"
-    
-    if name and not str(name).startswith("کاربر ") and name != email:
-        clean_name = re.sub(r'[\s]+', '-', str(name).strip())
-        if clean_tg_id:
-            return f"{clean_name}-{clean_tg_id}"
-        return clean_name
-
+    parts = []
+    if clean_name:
+        parts.append(clean_name)
+    if clean_u:
+        parts.append(clean_u)
     if clean_tg_id:
-        return clean_tg_id
+        parts.append(clean_tg_id)
+
+    if parts:
+        return "-".join(parts)
 
     return email or "Client"
 

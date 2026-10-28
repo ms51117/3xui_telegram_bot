@@ -43,8 +43,11 @@ xui = XUIClient()
     BROADCAST_MSG,
     SET_DOMAIN,
     SEARCH_QUERY,
-    SET_PANEL_URL
-) = range(5, 11)
+    SET_PANEL_URL,
+    EDIT_USER_NAME,
+    EDIT_USER_USERNAME,
+    EDIT_USER_TGID
+) = range(5, 14)
 
 # ----------------- Helper Functions -----------------
 
@@ -94,6 +97,23 @@ async def safe_edit_message_text(query, text: str, reply_markup=None):
         logger.warning(f"Markdown edit failed ({e}), falling back to plain text.")
         clean_text = text.replace("*", "").replace("`", "").replace("_", "")
         return await query.edit_message_text(clean_text, reply_markup=reply_markup)
+
+async def resolve_telegram_profile(bot, tg_id: int):
+    """
+    Attempts to fetch real username and full name from Telegram servers using get_chat.
+    Returns (username, full_name) or (None, None).
+    """
+    try:
+        chat = await bot.get_chat(tg_id)
+        if chat:
+            username = chat.username or None
+            first = chat.first_name or ""
+            last = chat.last_name or ""
+            full_name = f"{first} {last}".strip() or None
+            return username, full_name
+    except Exception as e:
+        logger.debug(f"Could not resolve telegram profile for {tg_id}: {e}")
+    return None, None
 
 # ----------------- Start & Routing -----------------
 
@@ -399,6 +419,24 @@ async def admin_view_user_callback(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text("❌ کاربر مورد نظر در دیتابیس یافت نشد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="admin_list_users_0")]]))
         return
 
+    # Auto-resolve telegram profile if username is missing but numeric telegram_id or numeric email exists
+    tg_id_val = db_user.get("telegram_id")
+    if not tg_id_val and email.isdigit():
+        tg_id_val = int(email)
+        db.update_user_profile(email, telegram_id=tg_id_val)
+        db_user = db.get_user_by_email(email)
+
+    if not db_user.get("username") and db_user.get("telegram_id"):
+        try:
+            tg_uname, tg_fname = await resolve_telegram_profile(context.bot, db_user["telegram_id"])
+            if tg_uname or tg_fname:
+                curr_name = db_user.get("name")
+                keep_name = curr_name if (curr_name and not curr_name.startswith("کاربر ") and curr_name != email) else (tg_fname or curr_name)
+                db.update_user_profile(email, name=keep_name, username=tg_uname)
+                db_user = db.get_user_by_email(email)
+        except Exception:
+            pass
+
     client = xui.get_client_by_email(email)
     
     name = db_user.get("name") or email
@@ -445,6 +483,10 @@ async def admin_view_user_callback(update: Update, context: ContextTypes.DEFAULT
     toggle_val = "0" if (client and client.get("enable", True)) else "1"
 
     keyboard = [
+        [
+            InlineKeyboardButton("✏️ ویرایش نام و مشخصات", callback_data=f"admin_edit_user_{email}"),
+            InlineKeyboardButton("🔍 استعلام از تلگرام", callback_data=f"admin_fetch_tg_info_{email}")
+        ],
         [
             InlineKeyboardButton("📤 ارسال کانفیگ به تلگرامش", callback_data=f"admin_send_user_{email}"),
             InlineKeyboardButton("🔑 دریافت لینک و QR", callback_data=f"admin_show_config_{email}")
@@ -947,6 +989,196 @@ async def admin_adj_days_finish(update: Update, context: ContextTypes.DEFAULT_TY
         )
     return ConversationHandler.END
 
+# ----------------- Admin: Edit User Info & Telegram Lookup -----------------
+
+async def admin_edit_user_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    email = query.data.replace("admin_edit_user_", "")
+    
+    db_user = db.get_user_by_email(email)
+    if not db_user:
+        await query.edit_message_text("❌ کاربر یافت نشد.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت", callback_data="admin_list_users_0")]]))
+        return
+
+    name = db_user.get("name") or email
+    uname = f"@{db_user['username']}" if db_user.get("username") else "ثبت نشده"
+    tg_id_str = str(db_user.get("telegram_id")) if db_user.get("telegram_id") else "ثبت نشده"
+
+    text = (
+        f"✏️ **ویرایش مشخصات کاربر: {name}**\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📧 **ایمیل در پنل:** `{email}`\n"
+        f"👤 **نام مستعار:** `{name}`\n"
+        f"🌐 **نام‌کاربری تلگرام:** {uname}\n"
+        f"🆔 **شناسه عددی تلگرام:** `{tg_id_str}`\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        "جهت تغییر هر بخش، روی دکمه مربوط به آن کلیک کنید:\n"
+        "💡 *نکته:* با زدن دکمه «استعلام از تلگرام»، نام و یوزرنیم کاربر مستقیماً از تلگرام خوانده و ثبت می‌شود."
+    )
+    keyboard = [
+        [
+            InlineKeyboardButton("✏️ تغییر نام مستعار (Name)", callback_data=f"admin_set_name_{email}"),
+            InlineKeyboardButton("✏️ تغییر نام‌کاربری (@username)", callback_data=f"admin_set_username_{email}")
+        ],
+        [
+            InlineKeyboardButton("✏️ تغییر شناسه عددی تلگرام", callback_data=f"admin_set_tgid_{email}"),
+            InlineKeyboardButton("🔍 استعلام خودکار از تلگرام", callback_data=f"admin_fetch_tg_info_{email}")
+        ],
+        [
+            InlineKeyboardButton("🔙 بازگشت به مدیریت کاربر", callback_data=f"admin_view_user_{email}")
+        ]
+    ]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def admin_fetch_tg_info_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    email = query.data.replace("admin_fetch_tg_info_", "")
+    db_user = db.get_user_by_email(email)
+    
+    if not db_user:
+        await query.answer("❌ کاربر یافت نشد.", show_alert=True)
+        return
+        
+    tg_id = db_user.get("telegram_id")
+    if not tg_id and email.isdigit():
+        tg_id = int(email)
+        db.update_user_profile(email, telegram_id=tg_id)
+        
+    if not tg_id:
+        await query.answer("❌ ابتدا باید شناسه عددی تلگرام کاربر را ثبت کنید.", show_alert=True)
+        return
+
+    await query.answer("در حال استعلام از سرورهای تلگرام...")
+    uname, fname = await resolve_telegram_profile(context.bot, tg_id)
+    if uname or fname:
+        curr_name = db_user.get("name")
+        keep_name = curr_name if (curr_name and not curr_name.startswith("کاربر ") and curr_name != email) else (fname or curr_name)
+        db.update_user_profile(email, name=keep_name, username=uname)
+        await query.message.reply_text(
+            f"✅ **اطلاعات کاربر از تلگرام دریافت شد:**\n\n"
+            f"👤 نام: `{fname or 'ثبت نشده'}`\n"
+            f"🌐 نام‌کاربری: `@{uname or 'ندارد'}`\n"
+            f"🆔 شناسه عددی: `{tg_id}`",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👤 مشاهده کاربر", callback_data=f"admin_view_user_{email}")]])
+        )
+    else:
+        await query.message.reply_text(
+            f"⚠️ امکان استعلام خودکار برای شناسه `{tg_id}` وجود نداشت.\n"
+            "(احتمالاً کاربر هنوز ربات را استارت نکرده یا حریم خصوصی تلگرام اجازه نمی‌دهد).\n"
+            "می‌توانید نام و یوزرنیم را به صورت دستی وارد فرمایید.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✏️ ویرایش دستی", callback_data=f"admin_edit_user_{email}")]])
+        )
+
+# Edit Name
+async def admin_set_name_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    email = query.data.replace("admin_set_name_", "")
+    context.user_data["edit_email"] = email
+    
+    u = db.get_user_by_email(email)
+    curr_name = u.get("name") or email if u else email
+    text = (
+        f"✏️ **تغییر نام مستعار برای کاربر:** `{email}`\n"
+        f"نام فعلی: `{curr_name}`\n\n"
+        "لطفاً نام مستعار جدید را بفرستید (مثال: `علی رضایی` یا `شرکت آریا`):"
+    )
+    keyboard = [[InlineKeyboardButton("❌ انصراف", callback_data=f"admin_edit_user_{email}")]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return EDIT_USER_NAME
+
+async def admin_set_name_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    new_name = update.message.text.strip()
+    email = context.user_data.get("edit_email")
+    if not email:
+        await update.message.reply_text("❌ نشست ویرایش منقضی شده است.")
+        return ConversationHandler.END
+        
+    db.update_user_profile(email, name=new_name)
+    await update.message.reply_text(
+        f"✅ نام مستعار کاربر با موفقیت به **{new_name}** تغییر یافت.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👤 مشاهده کاربر", callback_data=f"admin_view_user_{email}")]])
+    )
+    return ConversationHandler.END
+
+# Edit Username
+async def admin_set_username_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    email = query.data.replace("admin_set_username_", "")
+    context.user_data["edit_email"] = email
+    
+    u = db.get_user_by_email(email)
+    curr_uname = f"@{u['username']}" if u and u.get('username') else "ثبت نشده"
+    text = (
+        f"✏️ **تغییر نام‌کاربری تلگرام برای کاربر:** `{email}`\n"
+        f"یوزرنیم فعلی: `{curr_uname}`\n\n"
+        "لطفاً نام‌کاربری جدید را بدون @ یا با @ بفرستید (مثال: `ali52`):"
+    )
+    keyboard = [[InlineKeyboardButton("❌ انصراف", callback_data=f"admin_edit_user_{email}")]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return EDIT_USER_USERNAME
+
+async def admin_set_username_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    new_uname = update.message.text.strip()
+    email = context.user_data.get("edit_email")
+    if not email:
+        await update.message.reply_text("❌ نشست ویرایش منقضی شده است.")
+        return ConversationHandler.END
+        
+    clean = new_uname.lstrip("@").strip()
+    db.update_user_profile(email, username=clean)
+    await update.message.reply_text(
+        f"✅ نام‌کاربری تلگرام کاربر با موفقیت به **@{clean}** تغییر یافت.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👤 مشاهده کاربر", callback_data=f"admin_view_user_{email}")]])
+    )
+    return ConversationHandler.END
+
+# Edit Telegram ID
+async def admin_set_tgid_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    email = query.data.replace("admin_set_tgid_", "")
+    context.user_data["edit_email"] = email
+    
+    u = db.get_user_by_email(email)
+    curr_id = str(u.get('telegram_id')) if u and u.get('telegram_id') else "ثبت نشده"
+    text = (
+        f"✏️ **تغییر شناسه عددی تلگرام برای کاربر:** `{email}`\n"
+        f"شناسه فعلی: `{curr_id}`\n\n"
+        "لطفاً شناسه عددی جدید تلگرام کاربر را ارسال فرمایید (مثال: `87384626`):"
+    )
+    keyboard = [[InlineKeyboardButton("❌ انصراف", callback_data=f"admin_edit_user_{email}")]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return EDIT_USER_TGID
+
+async def admin_set_tgid_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text_val = update.message.text.strip()
+    email = context.user_data.get("edit_email")
+    if not email:
+        await update.message.reply_text("❌ نشست ویرایش منقضی شده است.")
+        return ConversationHandler.END
+
+    if not text_val.isdigit():
+        await update.message.reply_text("❌ شناسه عددی باید فقط شامل ارقام انگلیسی باشد. لطفاً مجدداً وارد فرمایید:")
+        return EDIT_USER_TGID
+
+    tg_id = int(text_val)
+    db.update_user_profile(email, telegram_id=tg_id)
+    
+    extra_info = ""
+    uname, fname = await resolve_telegram_profile(context.bot, tg_id)
+    if uname or fname:
+        db.update_user_profile(email, name=fname or None, username=uname)
+        extra_info = f"\n🔍 همچنین اطلاعات کاربر از تلگرام استعلام شد: @{uname or 'ندارد'} ({fname or ''})"
+        
+    await update.message.reply_text(
+        f"✅ شناسه عددی کاربر به `{tg_id}` تغییر یافت.{extra_info}",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("👤 مشاهده کاربر", callback_data=f"admin_view_user_{email}")]])
+    )
+    return ConversationHandler.END
+
 # ----------------- Admin: Cloudflare Menu & Broadcast Configs -----------------
 
 async def admin_cf_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1245,11 +1477,31 @@ async def admin_sync_xui_callback(update: Update, context: ContextTypes.DEFAULT_
     db.sync_existing_clients(clients, INBOUND_ID)
     users = db.list_all_users()
     
+    # Auto-resolve telegram usernames from Telegram servers for numeric clients
+    resolved_count = 0
+    for u in users:
+        tg_id = u.get("telegram_id")
+        if not tg_id and str(u.get("email")).isdigit():
+            tg_id = int(u["email"])
+            db.update_user_profile(u["email"], telegram_id=tg_id)
+        if tg_id and not u.get("username"):
+            try:
+                uname, fname = await resolve_telegram_profile(context.bot, tg_id)
+                if uname or fname:
+                    curr_name = u.get("name")
+                    keep_name = curr_name if (curr_name and not curr_name.startswith("کاربر ") and curr_name != u["email"]) else (fname or curr_name)
+                    db.update_user_profile(u["email"], name=keep_name, username=uname)
+                    resolved_count += 1
+            except Exception:
+                pass
+
+    users = db.list_all_users()
     text = (
         f"✅ **همگام‌سازی با موفقیت انجام شد.**\n\n"
-        f"▫️ تعداد کلاینت‌های خوانده شده از پنل: `{len(clients)}`\n"
-        f"▫️ مجموع کاربران ثبت‌شده در ربات: `{len(users)}`\n\n"
-        "کاربران قبلی شما با حفظ ایمیل و کانفیگ‌ها به ربات اضافه شدند و هیچ قطعی نخواهند داشت."
+        f"▫️ کلاینت‌های خوانده شده از 3X-UI: `{len(clients)}`\n"
+        f"▫️ شناسایی موفق نام/آیدی از تلگرام: `{resolved_count}`\n"
+        f"▫️ مجموع کل کاربران ثبت‌شده: `{len(users)}`\n\n"
+        "نام‌کاربری (@username) و اسامی کلاینت‌ها تا حد ممکن از تلگرام دریافت شد."
     )
     keyboard = [
         [InlineKeyboardButton("👥 مشاهده لیست کاربران", callback_data="admin_list_users_0")],
@@ -1369,6 +1621,39 @@ def main():
     )
     app.add_handler(set_panel_url_conv)
 
+    # 8. Edit User Name Conversation
+    edit_name_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_set_name_start, pattern=r"^admin_set_name_")],
+        states={
+            EDIT_USER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_name_finish)]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conversation, pattern=r"^admin_edit_user_")],
+        per_message=False
+    )
+    app.add_handler(edit_name_conv)
+
+    # 9. Edit User Username Conversation
+    edit_uname_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_set_username_start, pattern=r"^admin_set_username_")],
+        states={
+            EDIT_USER_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_username_finish)]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conversation, pattern=r"^admin_edit_user_")],
+        per_message=False
+    )
+    app.add_handler(edit_uname_conv)
+
+    # 10. Edit User Telegram ID Conversation
+    edit_tgid_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_set_tgid_start, pattern=r"^admin_set_tgid_")],
+        states={
+            EDIT_USER_TGID: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_set_tgid_finish)]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conversation, pattern=r"^admin_edit_user_")],
+        per_message=False
+    )
+    app.add_handler(edit_tgid_conv)
+
     # Error handler
     app.add_error_handler(error_handler)
 
@@ -1388,6 +1673,8 @@ def main():
     app.add_handler(CallbackQueryHandler(admin_refresh_panel_url_callback, pattern="^admin_refresh_panel_url$"))
     app.add_handler(CallbackQueryHandler(admin_list_users_callback, pattern=r"^admin_list_users_"))
     app.add_handler(CallbackQueryHandler(admin_view_user_callback, pattern=r"^admin_view_user_"))
+    app.add_handler(CallbackQueryHandler(admin_edit_user_menu_callback, pattern=r"^admin_edit_user_"))
+    app.add_handler(CallbackQueryHandler(admin_fetch_tg_info_callback, pattern=r"^admin_fetch_tg_info_"))
     app.add_handler(CallbackQueryHandler(admin_show_config_callback, pattern=r"^admin_show_config_"))
     app.add_handler(CallbackQueryHandler(admin_send_user_callback, pattern=r"^admin_send_user_"))
     app.add_handler(CallbackQueryHandler(admin_toggle_callback, pattern=r"^admin_toggle_"))

@@ -99,10 +99,14 @@ class TestBotModules(unittest.TestCase):
         expected_start = f"vless://{uuid_str}@{host}:443?path=%2Fvless&security=tls&encryption=none&host={host}&fp=chrome&type=ws&sni={host}#Tunnel-Ali-Rezaei"
         self.assertEqual(config_url, expected_start)
 
-        # Test remark with @username and id preserved
-        user_info = {"username": "ms51117", "telegram_id": 87384626, "name": "Mohammad"}
+        # Test remark with generic name -> @username-id
+        user_info = {"username": "ms51117", "telegram_id": 87384626, "name": "کاربر 87384626"}
         user_remark = db.get_client_remark(user_info)
         self.assertEqual(user_remark, "@ms51117-87384626")
+
+        # Test remark with custom name -> Name-@username-id
+        user_custom = {"username": "ms51117", "telegram_id": 87384626, "name": "Mohammad"}
+        self.assertEqual(db.get_client_remark(user_custom), "Mohammad-@ms51117-87384626")
 
         config_with_username = cloudflare.build_vless_config(uuid_str, host, user_remark)
         self.assertIn("#Tunnel-@ms51117-87384626", config_with_username)
