@@ -1,6 +1,7 @@
 import sqlite3
 import datetime
 import os
+import re
 import logging
 from config import DB_PATH
 
@@ -126,6 +127,23 @@ def bind_telegram_id_by_email(email: str, telegram_id: int):
     conn.close()
     return affected > 0
 
+def update_user_profile(email: str, name: str = None, username: str = None):
+    conn = get_connection()
+    cursor = conn.cursor()
+    clean_username = normalize_username(username) if username is not None else None
+    
+    if name is not None and clean_username is not None:
+        cursor.execute("UPDATE users SET name = ?, username = ? WHERE email = ?", (name, clean_username, email))
+    elif name is not None:
+        cursor.execute("UPDATE users SET name = ? WHERE email = ?", (name, email))
+    elif clean_username is not None:
+        cursor.execute("UPDATE users SET username = ? WHERE email = ?", (clean_username, email))
+        
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return affected > 0
+
 def list_all_users():
     conn = get_connection()
     cursor = conn.cursor()
@@ -199,3 +217,47 @@ def sync_existing_clients(clients_list, inbound_id: int = 2):
                 sub_id=sub_id,
                 is_active=is_enable
             )
+
+def get_client_remark(user_info) -> str:
+    """
+    Constructs a clear identifying remark for the VLESS config.
+    Priority:
+    1. If username exists: @username-telegram_id (e.g. @ms51117-87384626)
+    2. If name exists and is not generic: Name-telegram_id (e.g. Ali-87384626)
+    3. If numeric telegram_id or email exists: telegram_id (e.g. 87384626)
+    4. Fallback: email
+    """
+    if isinstance(user_info, str):
+        u = get_user_by_email(user_info)
+        if not u:
+            return user_info
+    elif isinstance(user_info, dict):
+        u = user_info
+    else:
+        return "Client"
+
+    username = u.get("username")
+    name = u.get("name")
+    tg_id = u.get("telegram_id")
+    email = u.get("email", "")
+
+    # Clean username
+    clean_u = username.lstrip("@").strip() if username else ""
+    clean_tg_id = str(tg_id).strip() if tg_id else (email if str(email).isdigit() else "")
+
+    if clean_u and clean_tg_id:
+        return f"@{clean_u}-{clean_tg_id}"
+    elif clean_u:
+        return f"@{clean_u}"
+    
+    if name and not str(name).startswith("کاربر ") and name != email:
+        clean_name = re.sub(r'[\s]+', '-', str(name).strip())
+        if clean_tg_id:
+            return f"{clean_name}-{clean_tg_id}"
+        return clean_name
+
+    if clean_tg_id:
+        return clean_tg_id
+
+    return email or "Client"
+

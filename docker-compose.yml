@@ -9,11 +9,12 @@ services:
     volumes:
       # ذخیره دائمی دیتابیس کاربران و کش دامنه کلودفلر
       - ./data:/app/data
-      # دسترسی به ژورنال سیستم‌عامل برای خواندن خودکار دامنه کلودفلر
-      - /var/log/journal:/var/log/journal:ro
-      - /run/log/journal:/run/log/journal:ro
-      # دسترسی فقط-خواندنی به دیتابیس پنل در صورت نیاز به فال‌بک
-      - /etc/x-ui:/etc/x-ui:ro
+      # دسترسی به لاگ‌های سیستم‌عامل و ژورنال برای خواندن خودکار دامنه کلودفلر
+      - /var/log:/var/log:ro
+      - /run/log:/run/log:ro
+      - /etc/machine-id:/etc/machine-id:ro
+      # اشتراک فایل‌های دامنه و دیتابیس پنل با سرور
+      - /etc/x-ui:/etc/x-ui
     environment:
       - TZ=Asia/Tehran
       - DB_PATH=/app/data/bot_data.db

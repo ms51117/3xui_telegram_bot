@@ -12,7 +12,7 @@ from telegram.ext import (
 from telegram.request import HTTPXRequest
 
 from config import (
-    BOT_TOKEN, ADMIN_ID, INBOUND_ID
+    BOT_TOKEN, ADMIN_ID, INBOUND_ID, PANEL_USERNAME, PANEL_PASSWORD
 )
 import database as db
 from xui_api import XUIClient
@@ -42,8 +42,9 @@ xui = XUIClient()
     ADJUST_DAYS,
     BROADCAST_MSG,
     SET_DOMAIN,
-    SEARCH_QUERY
-) = range(5, 10)
+    SEARCH_QUERY,
+    SET_PANEL_URL
+) = range(5, 11)
 
 # ----------------- Helper Functions -----------------
 
@@ -122,15 +123,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 1. Check if user is already linked by telegram_id
     db_user = db.get_user_by_telegram_id(user.id)
+
+    # 2. If not found by telegram_id, check if numeric email matches user.id (from 3X-UI sync)
+    if not db_user:
+        match_by_email = db.get_user_by_email(str(user.id))
+        if match_by_email:
+            db.bind_telegram_id_by_email(str(user.id), user.id)
+            db_user = db.get_user_by_email(str(user.id))
+            logger.info(f"Auto-bound user {user.id} by numeric email match.")
     
-    # 2. If not found by telegram_id, try matching by @username
+    # 3. If not found by telegram_id, try matching by @username
     if not db_user and user.username:
         if db.bind_telegram_id_by_username(user.username, user.id):
             db_user = db.get_user_by_telegram_id(user.id)
             logger.info(f"Auto-bound user @{user.username} to Telegram ID {user.id}")
 
-    # 3. If found, display their customer portal
+    # 4. If found, save real Telegram username and display name, then show panel
     if db_user:
+        tg_username = user.username or db_user.get("username")
+        tg_name = user.full_name or db_user.get("name")
+        db.update_user_profile(db_user["email"], name=tg_name, username=tg_username)
+        if not db_user.get("telegram_id"):
+            db.bind_telegram_id_by_email(db_user["email"], user.id)
+        # Reload updated record
+        db_user = db.get_user_by_email(db_user["email"])
         await show_user_panel(update, context, db_user)
     else:
         # User not recognized
@@ -229,7 +245,8 @@ async def user_get_config_callback(update: Update, context: ContextTypes.DEFAULT
         return
 
     host = cloudflare.get_current_domain()
-    config_url = cloudflare.build_vless_config(uuid_val, host, db_user.get("name") or email)
+    remark = db.get_client_remark(db_user)
+    config_url = cloudflare.build_vless_config(uuid_val, host, remark)
     qr_bio = cloudflare.generate_qr_code(config_url)
 
     caption = (
@@ -284,11 +301,13 @@ async def show_admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYP
     # Fetch status & user counts
     users = db.list_all_users()
     domain = cloudflare.get_current_domain()
+    panel_url = cloudflare.get_current_panel_url()
     
     text = (
         "👑 **پنل مدیریت پیشرفته 3X-UI**\n"
         "━━━━━━━━━━━━━━━━━━\n"
-        f"🌐 **دامنه تانل کلودفلر:**\n`{domain}`\n\n"
+        f"🌐 **دامنه تانل VLESS:**\n`{domain}`\n\n"
+        f"🔧 **آدرس پنل 3X-UI:**\n`{panel_url}`\n\n"
         f"👥 **تعداد کاربران ثبت‌شده:** `{len(users)} کاربر`\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "برای مدیریت کامل، یکی از گزینه‌های زیر را انتخاب کنید:"
@@ -301,13 +320,14 @@ async def show_admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYP
         ],
         [
             InlineKeyboardButton("🔍 جستجوی کاربر", callback_data="admin_search_user"),
-            InlineKeyboardButton("🌐 مدیریت تانل کلودفلر", callback_data="admin_cf_menu")
+            InlineKeyboardButton("🔧 لینک ورود به پنل 3X-UI", callback_data="admin_get_panel_url")
         ],
         [
-            InlineKeyboardButton("📊 وضعیت سرور", callback_data="admin_server_status"),
-            InlineKeyboardButton("📢 پیام همگانی", callback_data="admin_broadcast")
+            InlineKeyboardButton("🌐 مدیریت تانل کلودفلر", callback_data="admin_cf_menu"),
+            InlineKeyboardButton("📊 وضعیت سرور", callback_data="admin_server_status")
         ],
         [
+            InlineKeyboardButton("📢 پیام همگانی", callback_data="admin_broadcast"),
             InlineKeyboardButton("🔄 همگام‌سازی با 3X-UI", callback_data="admin_sync_xui")
         ]
     ]
@@ -351,7 +371,8 @@ async def admin_list_users_callback(update: Update, context: ContextTypes.DEFAUL
         name = u.get("name") or u["email"]
         status_icon = "🟢" if u.get("is_active", 1) else "🔴"
         uname_display = f" (@{u['username']})" if u.get('username') else ""
-        btn_text = f"{status_icon} {name}{uname_display}"
+        tg_id_display = f" | {u['telegram_id']}" if u.get('telegram_id') else ""
+        btn_text = f"{status_icon} {name}{uname_display}{tg_id_display}"
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"admin_view_user_{u['email']}")])
 
     # Navigation buttons
@@ -459,7 +480,8 @@ async def admin_show_config_callback(update: Update, context: ContextTypes.DEFAU
         return
 
     host = cloudflare.get_current_domain()
-    config_url = cloudflare.build_vless_config(uuid_val, host, db_user.get("name") or email)
+    remark = db.get_client_remark(db_user)
+    config_url = cloudflare.build_vless_config(uuid_val, host, remark)
     qr_bio = cloudflare.generate_qr_code(config_url)
 
     caption = (
@@ -485,7 +507,8 @@ async def admin_send_user_callback(update: Update, context: ContextTypes.DEFAULT
         return
 
     host = cloudflare.get_current_domain()
-    config_url = cloudflare.build_vless_config(uuid_val, host, db_user.get("name") or email)
+    remark = db.get_client_remark(db_user)
+    config_url = cloudflare.build_vless_config(uuid_val, host, remark)
     qr_bio = cloudflare.generate_qr_code(config_url)
 
     target_chat_id = db_user["telegram_id"]
@@ -799,7 +822,9 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 3. Generate VLESS config
     host = cloudflare.get_current_domain()
-    config_url = cloudflare.build_vless_config(uuid_val, host, name)
+    db_u = db.get_user_by_email(email)
+    remark = db.get_client_remark(db_u or {"name": name, "username": username, "email": email, "telegram_id": tg_id})
+    config_url = cloudflare.build_vless_config(uuid_val, host, remark)
     qr_bio = cloudflare.generate_qr_code(config_url)
 
     success_text = (
@@ -988,7 +1013,8 @@ async def admin_cf_broadcast_all_callback(update: Update, context: ContextTypes.
         if not uuid_val:
             continue
             
-        config_url = cloudflare.build_vless_config(uuid_val, host, u.get("name") or u["email"])
+        remark = db.get_client_remark(u)
+        config_url = cloudflare.build_vless_config(uuid_val, host, remark)
         try:
             msg = (
                 "🌐 **آدرس سرور به‌روزرسانی شد.**\n\n"
@@ -1007,6 +1033,127 @@ async def admin_cf_broadcast_all_callback(update: Update, context: ContextTypes.
         f"▫️ ناموفق (استارت نزده یا بلاک): `{fail_count}` کاربر",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به مدیریت دامنه", callback_data="admin_cf_menu")]])
     )
+
+# ----------------- Admin: 3X-UI Panel Access -----------------
+
+async def admin_get_panel_url_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query:
+        await query.answer()
+    
+    panel_url = cloudflare.get_current_panel_url()
+    text = (
+        "🔧 **اطلاعات ورود به پنل مدیریت 3X-UI**\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        f"🌐 **آدرس اختصاصی پنل:**\n`{panel_url}`\n\n"
+        f"👤 **نام کاربری (Username):** `{PANEL_USERNAME}`\n"
+        f"🔑 **رمز عبور (Password):** `{PANEL_PASSWORD}`\n"
+        "━━━━━━━━━━━━━━━━━━\n"
+        "💡 *توضیح:* این آدرس از طریق تانل کلودفلر ایجاد شده و بدون نیاز به فیلترشکن باز می‌شود."
+    )
+    keyboard = []
+    if panel_url.startswith("http"):
+        keyboard.append([InlineKeyboardButton("🌐 ورود مستقیم به پنل", url=panel_url)])
+    keyboard.append([InlineKeyboardButton("🔄 استعلام مجدد آدرس", callback_data="admin_refresh_panel_url")])
+    keyboard.append([InlineKeyboardButton("✍️ ثبت دستی آدرس پنل", callback_data="admin_manual_panel_url")])
+    keyboard.append([InlineKeyboardButton("🔙 بازگشت به منوی مدیریت", callback_data="admin_home")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    if query:
+        await safe_edit_message_text(query, text, reply_markup=reply_markup)
+    elif update.effective_message:
+        await safe_reply_text(update.effective_message, text, reply_markup=reply_markup)
+
+async def admin_refresh_panel_url_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    url = cloudflare.get_current_panel_url()
+    await query.answer(f"آدرس بازخوانی شد: {url}", show_alert=True)
+    await admin_get_panel_url_callback(update, context)
+
+async def admin_manual_panel_url_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    text = (
+        "✍️ لطفاً آدرس کامل پنل 3X-UI را ارسال فرمایید:\n\n"
+        "مثال:\n`https://xyz-panel.trycloudflare.com/h4B2swmMPtUzP9SJqA/`"
+    )
+    keyboard = [[InlineKeyboardButton("❌ انصراف", callback_data="admin_get_panel_url")]]
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return SET_PANEL_URL
+
+async def admin_manual_panel_url_finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    url = update.message.text.strip()
+    saved = cloudflare.save_custom_panel_url(url)
+    await update.message.reply_text(
+        f"✅ آدرس پنل ذخیره شد:\n`{saved}`",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔧 مشاهده پنل", callback_data="admin_get_panel_url")]])
+    )
+    return ConversationHandler.END
+
+# ----------------- Background Watcher Job -----------------
+
+async def cloudflare_domain_watcher_job(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Background job running every 60 seconds.
+    Monitors changes in:
+    1. VLESS Tunnel Domain (cloudflared-quick)
+    2. 3X-UI Admin Panel URL (cloudflared-panel)
+    Alerts Admin immediately upon change so access is never lost.
+    """
+    # 1. Check VLESS Domain
+    current_domain = cloudflare.get_current_domain()
+    last_domain = context.bot_data.get("last_domain")
+    if last_domain is None:
+        context.bot_data["last_domain"] = current_domain
+    elif current_domain and current_domain != "localhost" and current_domain != last_domain:
+        context.bot_data["last_domain"] = current_domain
+        logger.info(f"Detected new Cloudflare VLESS domain: {current_domain}")
+        text = (
+            "🔔 **تغییر دامنه تانل VLESS کلودفلر:**\n\n"
+            f"🌐 دامنه جدید:\n`{current_domain}`\n\n"
+            "جهت ارسال خودکار کانفیگ‌های جدید به تمام کاربران، می‌توانید از منوی زیر استفاده کنید."
+        )
+        keyboard = [
+            [InlineKeyboardButton("📢 ارسال همگانی کانفیگ جدید به کاربران", callback_data="admin_cf_broadcast_all")],
+            [InlineKeyboardButton("🌐 مدیریت تانل", callback_data="admin_cf_menu")]
+        ]
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to alert admin about VLESS domain change: {e}")
+
+    # 2. Check 3X-UI Admin Panel URL
+    current_panel_url = cloudflare.get_current_panel_url()
+    last_panel_url = context.bot_data.get("last_panel_url")
+    if last_panel_url is None:
+        context.bot_data["last_panel_url"] = current_panel_url
+    elif current_panel_url and "trycloudflare.com" in current_panel_url and current_panel_url != last_panel_url:
+        context.bot_data["last_panel_url"] = current_panel_url
+        logger.info(f"Detected new 3X-UI Panel URL: {current_panel_url}")
+        panel_text = (
+            "🔔 **آدرس جدید ورود به پنل 3X-UI:**\n\n"
+            f"🌐 **آدرس پنل:**\n`{current_panel_url}`\n\n"
+            f"👤 **نام کاربری:** `{PANEL_USERNAME}`\n"
+            f"🔑 **رمز عبور:** `{PANEL_PASSWORD}`"
+        )
+        keyboard = [
+            [InlineKeyboardButton("🌐 ورود مستقیم به پنل", url=current_panel_url)],
+            [InlineKeyboardButton("🔧 مشاهده اطلاعات پنل", callback_data="admin_get_panel_url")]
+        ]
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=panel_text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to alert admin about panel URL change: {e}")
 
 # ----------------- Admin: Server Status -----------------
 
@@ -1211,6 +1358,17 @@ def main():
     )
     app.add_handler(search_conv)
 
+    # 7. Manual Panel URL Conversation
+    set_panel_url_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(admin_manual_panel_url_start, pattern="^admin_manual_panel_url$")],
+        states={
+            SET_PANEL_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, admin_manual_panel_url_finish)]
+        },
+        fallbacks=[CallbackQueryHandler(cancel_conversation, pattern="^admin_get_panel_url$")],
+        per_message=False
+    )
+    app.add_handler(set_panel_url_conv)
+
     # Error handler
     app.add_error_handler(error_handler)
 
@@ -1226,6 +1384,8 @@ def main():
 
     # Admin callbacks
     app.add_handler(CallbackQueryHandler(admin_home_callback, pattern="^admin_home$"))
+    app.add_handler(CallbackQueryHandler(admin_get_panel_url_callback, pattern="^admin_get_panel_url$"))
+    app.add_handler(CallbackQueryHandler(admin_refresh_panel_url_callback, pattern="^admin_refresh_panel_url$"))
     app.add_handler(CallbackQueryHandler(admin_list_users_callback, pattern=r"^admin_list_users_"))
     app.add_handler(CallbackQueryHandler(admin_view_user_callback, pattern=r"^admin_view_user_"))
     app.add_handler(CallbackQueryHandler(admin_show_config_callback, pattern=r"^admin_show_config_"))

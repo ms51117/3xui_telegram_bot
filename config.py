@@ -4,7 +4,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Telegram Bot Settings
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8653162681:AAGJPWnnLiPnZMkI0N_cOAB7cG1a6IULaY0")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8653162681:AAFh5Zo9TlLZfRN_-bgBT5j7yzHeEpON1g8")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "87384626"))
 
 # 3X-UI Panel Settings
@@ -17,8 +17,8 @@ if PANEL_BASE_PATH and not PANEL_BASE_PATH.startswith("/"):
 if PANEL_BASE_PATH and not PANEL_BASE_PATH.endswith("/"):
     PANEL_BASE_PATH = PANEL_BASE_PATH + "/"
 
-PANEL_USERNAME = os.getenv("PANEL_USERNAME", "admin")
-PANEL_PASSWORD = os.getenv("PANEL_PASSWORD", "admin")
+PANEL_USERNAME = os.getenv("PANEL_USERNAME", "lf73WSAPtH")
+PANEL_PASSWORD = os.getenv("PANEL_PASSWORD", "1y7F4Xwj2AB7QUmk12")
 PANEL_API_TOKEN = os.getenv("PANEL_API_TOKEN", "")
 
 # Target Inbound for VPN configs

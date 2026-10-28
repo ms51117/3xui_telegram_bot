@@ -99,6 +99,20 @@ class TestBotModules(unittest.TestCase):
         expected_start = f"vless://{uuid_str}@{host}:443?path=%2Fvless&security=tls&encryption=none&host={host}&fp=chrome&type=ws&sni={host}#Tunnel-Ali-Rezaei"
         self.assertEqual(config_url, expected_start)
 
+        # Test remark with @username and id preserved
+        user_info = {"username": "ms51117", "telegram_id": 87384626, "name": "Mohammad"}
+        user_remark = db.get_client_remark(user_info)
+        self.assertEqual(user_remark, "@ms51117-87384626")
+
+        config_with_username = cloudflare.build_vless_config(uuid_str, host, user_remark)
+        self.assertIn("#Tunnel-@ms51117-87384626", config_with_username)
+
+    def test_panel_url_helper(self):
+        url = cloudflare.get_current_panel_url()
+        self.assertIsNotNone(url)
+        self.assertTrue(url.startswith("http"))
+        self.assertIn("h4B2swmMPtUzP9SJqA", url)
+
     def test_qr_code_generation(self):
         sample_url = "vless://test@test.com:443"
         bio = cloudflare.generate_qr_code(sample_url)
