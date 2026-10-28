@@ -77,14 +77,35 @@ def make_progress_bar(used: int, total: int, length: int = 10) -> str:
     bar = "█" * filled + "░" * empty
     return f"[{bar}] {int(pct * 100)}%"
 
+async def safe_reply_text(message, text: str, reply_markup=None):
+    try:
+        return await message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"Markdown reply failed ({e}), falling back to plain text.")
+        clean_text = text.replace("*", "").replace("`", "").replace("_", "")
+        return await message.reply_text(clean_text, reply_markup=reply_markup)
+
+async def safe_edit_message_text(query, text: str, reply_markup=None):
+    try:
+        return await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    except Exception as e:
+        logger.warning(f"Markdown edit failed ({e}), falling back to plain text.")
+        clean_text = text.replace("*", "").replace("`", "").replace("_", "")
+        return await query.edit_message_text(clean_text, reply_markup=reply_markup)
+
 # ----------------- Start & Routing -----------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user:
+        return
     user = update.effective_user
-    chat_id = update.effective_chat.id
+    chat_id = update.effective_chat.id if update.effective_chat else None
+    
+    logger.info(f"===> [USER INTERACTION] User ID: {user.id}, Username: @{user.username}, Name: {user.first_name}")
 
     # Check if admin
     if user.id == ADMIN_ID:
+        logger.info(f"User {user.id} recognized as ADMIN. Showing Admin Dashboard.")
         await show_admin_dashboard(update, context)
         return
 
@@ -123,7 +144,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [InlineKeyboardButton("💬 ارتباط با پشتیبانی", url=f"tg://user?id={ADMIN_ID}")]
         ]
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        if update.effective_message:
+            await safe_reply_text(update.effective_message, text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def handle_general_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.effective_user or not update.effective_message:
+        return
+    user = update.effective_user
+    logger.info(f"===> [GENERAL MESSAGE] Received text '{update.effective_message.text}' from User ID: {user.id} (@{user.username})")
+    await start(update, context)
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"===> [BOT ERROR] Exception occurred: {context.error}", exc_info=context.error)
 
 # ----------------- User Panel -----------------
 
@@ -174,9 +206,9 @@ async def show_user_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, db
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-    else:
-        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        await safe_edit_message_text(update.callback_query, text, reply_markup=reply_markup)
+    elif update.effective_message:
+        await safe_reply_text(update.effective_message, text, reply_markup=reply_markup)
 
 async def user_get_config_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -281,9 +313,9 @@ async def show_admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYP
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
-    else:
-        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+        await safe_edit_message_text(update.callback_query, text, reply_markup=reply_markup)
+    elif update.effective_message:
+        await safe_reply_text(update.effective_message, text, reply_markup=reply_markup)
 
 # ----------------- Admin: User List & Management -----------------
 
@@ -1172,8 +1204,12 @@ def main():
     )
     app.add_handler(search_conv)
 
+    # Error handler
+    app.add_error_handler(error_handler)
+
     # Standard Commands & Callbacks
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_general_message))
     
     # User callbacks
     app.add_handler(CallbackQueryHandler(user_get_config_callback, pattern=r"^user_get_config_"))
