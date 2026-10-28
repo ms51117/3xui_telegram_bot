@@ -2,6 +2,7 @@ import requests
 import json
 import sqlite3
 import os
+import re
 import uuid as uuid_pkg
 import time
 import logging
@@ -57,6 +58,16 @@ class XUIClient:
             "password": PANEL_PASSWORD,
             "twoFactorCode": ""
         }
+
+        # Try establishing session cookies and extracting CSRF token from HTML
+        try:
+            init_resp = self.session.get(self.api_prefix, timeout=5)
+            if init_resp.status_code == 200:
+                match = re.search(r'name=["\']csrf-token["\']\s+content=["\']([^"\']+)["\']', init_resp.text)
+                if match:
+                    self.session.headers["X-CSRF-Token"] = match.group(1)
+        except Exception:
+            pass
 
         # Try with full base path first, then without if needed
         candidate_urls = [

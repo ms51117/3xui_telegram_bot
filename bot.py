@@ -9,6 +9,7 @@ from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler, MessageHandler,
     ConversationHandler, ContextTypes, filters
 )
+from telegram.request import HTTPXRequest
 
 from config import (
     BOT_TOKEN, ADMIN_ID, INBOUND_ID
@@ -1131,8 +1132,14 @@ def main():
     except Exception as e:
         logger.warning(f"Initial 3X-UI sync failed on startup: {e}")
 
-    # Build Telegram Bot application
-    app = Application.builder().token(BOT_TOKEN).build()
+    # Build Telegram Bot application with robust network timeouts
+    t_request = HTTPXRequest(
+        connect_timeout=30.0,
+        read_timeout=30.0,
+        write_timeout=30.0,
+        pool_timeout=30.0
+    )
+    app = Application.builder().token(BOT_TOKEN).request(t_request).build()
 
     # 1. Add User Conversation
     add_user_conv = ConversationHandler(
